@@ -98,4 +98,31 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
+// Get overall points summary for the logged-in user
+router.get('/overall', auth, async (req, res) => {
+  try {
+    const userId = req.user;
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+
+    const points = await Point.find({
+      userId,
+      date: { $gte: startOfMonth },
+    });
+
+    const dailyPoints = points.map(p => p.totalPoints || 0);
+    const monthlyTotal = dailyPoints.reduce((sum, pts) => sum + pts, 0);
+
+    res.json({
+      monthlyTotal,
+      dailyPoints,
+    });
+  } catch (error) {
+    console.error('Error fetching overall points:', error.message);
+    res.status(500).json({ msg: 'Server error' });
+  }
+});
+
+
 module.exports = router;
