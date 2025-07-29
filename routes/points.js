@@ -18,24 +18,34 @@ const requiredTasks = [
 router.post('/', auth, async (req, res) => {
   try {
     const { tasks, reasons } = req.body;
+    const dateQuery = req.query.date;
 
-    // Check tasks object exists and is valid
+    // --- Validate tasks structure ---
     if (!tasks || typeof tasks !== 'object') {
       return res.status(400).json({ msg: 'Tasks must be provided as an object' });
     }
 
-    // Check all required tasks are present
+    const requiredTasks = [
+      "exercise",
+      "eatHealthy",
+      "meditation",
+      "reading",
+      "learning",
+      "noSocialMedia",
+      "noFap",
+      "noBinge",
+    ];
+
     for (const task of requiredTasks) {
       if (!(task in tasks)) {
         return res.status(400).json({ msg: `Missing task: ${task}` });
       }
     }
 
-    // Check reasons if task is false
+    // --- Validate reasons ---
     for (const task of requiredTasks) {
       const done = tasks[task];
       const reason = reasons?.[task];
-
       if (done === false) {
         if (!reason || reason.trim() === '') {
           return res.status(400).json({ msg: `Reason is required for not completing "${task}"` });
@@ -43,49 +53,80 @@ router.post('/', auth, async (req, res) => {
       }
     }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0); // Normalize to start of day
-
-    const total = Object.values(tasks).filter(Boolean).length;
-
-    let existing = await Point.findOne({ userId: req.user, date: today });
-    if (existing) {
-      return res.status(400).json({ msg: 'Points for today already submitted' });
+    // --- Parse & normalize target date ---
+    let targetDate = new Date();
+    if (dateQuery) {
+      const parsedDate = new Date(dateQuery);
+      if (isNaN(parsedDate.getTime())) {
+        return res.status(400).json({ msg: 'Invalid date format' });
+      }
+      targetDate = parsedDate;
     }
+    targetDate.setHours(0, 0, 0, 0); // Normalize to 00:00
+
+    // --- Prevent double submission ---
+    const already = await Point.findOne({
+      userId: req.user,
+      date: targetDate,
+    });
+
+    if (already) {
+      return res.status(400).json({ msg: 'Points for this date already submitted' });
+    }
+
+    // --- Save to DB ---
+    const total = Object.values(tasks).filter(Boolean).length;
 
     const point = new Point({
       userId: req.user,
-      date: today,
+      date: targetDate,
       tasks,
       totalPoints: total,
-      reasons
+      reasons,
     });
 
     await point.save();
-    res.json(point);
+    return res.status(201).json(point);
 
   } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server Error');
+    console.error("Error in POST /points:", err.message);
+    return res.status(500).json({ msg: 'Server Error' });
   }
 });
-
 
 // ✅ GET /api/points/today – Get today’s points
-router.get('/today', auth, async (req, res) => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
+router.get('/by-date', auth, async (req, res) => {
   try {
-    const point = await Point.findOne({ userId: req.user, date: today });
-    if (!point) return res.status(404).json({ msg: 'No points found for today' });
+    const { date } = req.query;
 
-    res.json(point);
+    if (!date) {
+      return res.status(400).json({ msg: 'Query parameter "date" is required in YYYY-MM-DD format.' });
+    }
+
+    const parsedDate = new Date(date);
+    if (isNaN(parsedDate.getTime())) {
+      return res.status(400).json({ msg: 'Invalid date format. Expected format: YYYY-MM-DD' });
+    }
+
+    parsedDate.setHours(0, 0, 0, 0); // Normalize to midnight
+
+    const point = await Point.findOne({
+      userId: req.user,
+      date: parsedDate,
+    });
+
+    if (!point) {
+      return res.status(404).json({ msg: `No points found for ${parsedDate.toDateString()}` });
+    }
+
+    return res.json(point);
+
   } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server Error');
+    console.error('Error in GET /points/by-date:', err.message);
+    return res.status(500).json({ msg: 'Server Error' });
   }
 });
+
 
 // ✅ GET /api/points – Get all points
 router.get('/', auth, async (req, res) => {
@@ -102,6 +143,7 @@ router.get('/', auth, async (req, res) => {
 router.get('/overall', auth, async (req, res) => {
   try {
     const userId = req.user;
+
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
@@ -109,10 +151,14 @@ router.get('/overall', auth, async (req, res) => {
     const points = await Point.find({
       userId,
       date: { $gte: startOfMonth },
-    });
+    }).sort({ date: 1 }); // optional: sort chronologically
 
-    const dailyPoints = points.map(p => p.totalPoints || 0);
-    const monthlyTotal = dailyPoints.reduce((sum, pts) => sum + pts, 0);
+    const dailyPoints = points.map(p => ({
+      date: p.date,
+      totalPoints: p.totalPoints || 0,
+    }));
+
+    const monthlyTotal = dailyPoints.reduce((sum, entry) => sum + entry.totalPoints, 0);
 
     res.json({
       monthlyTotal,
@@ -123,6 +169,5 @@ router.get('/overall', auth, async (req, res) => {
     res.status(500).json({ msg: 'Server error' });
   }
 });
-
 
 module.exports = router;
